@@ -40,4 +40,10 @@ def _test_workspace(tmp_path_factory):
 
     train_and_save_models()
 
+    from product_auth.data_generator import generate_and_persist_scan_data
+    from product_auth.fraud_model import train_and_save_fraud_model
+
+    fraud_df = generate_and_persist_scan_data(n_legit=100, n_fraud=70)
+    train_and_save_fraud_model(fraud_df)
+
     yield workspace

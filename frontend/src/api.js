@@ -40,6 +40,11 @@ export const api = {
   recentPredictions: (authHeaders) => request('/predictions/recent', { authHeaders }),
   explain: (customerId, authHeaders) => request('/explain', { method: 'POST', body: { customer_id: customerId }, authHeaders }),
   askPolicy: (question, authHeaders) => request('/policy/ask', { method: 'POST', body: { question }, authHeaders }),
+  registerProduct: (productName, authHeaders) =>
+    request('/products/register', { method: 'POST', body: { product_name: productName }, authHeaders }),
+  scanProduct: (serial, latitude, longitude, authHeaders) =>
+    request('/scan', { method: 'POST', body: { serial, latitude, longitude }, authHeaders }),
+  productHistory: (serial, authHeaders) => request(`/products/${serial}/history`, { authHeaders }),
 }
 
 export { ApiError, API_BASE }

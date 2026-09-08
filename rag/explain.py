@@ -134,3 +134,80 @@ async def answer_policy_question(question: str) -> Dict:
         "generated_by": "llm" if llm_text else "template_fallback",
         "sources": chunks,
     }
+
+
+# --- Product authenticity domain --------------------------------------------
+
+FRAUD_FEATURE_LABELS = {
+    "scan_count": "total number of scans",
+    "unique_locations": "number of distinct scan locations",
+    "max_travel_speed_kmh": "fastest implied travel speed between consecutive scans (km/h)",
+    "min_seconds_between_scans": "shortest gap between two scans (seconds)",
+    "scans_last_hour": "scans in the last hour",
+}
+
+FRAUD_SYSTEM_PROMPT = (
+    "You write plain-language fraud-risk explanations for a product authenticity platform. "
+    "You are given a risk prediction, a product's scan history features, and excerpts from the "
+    "company's authenticity/fraud policy. Explain the decision in 2-4 sentences using ONLY the "
+    "policy excerpts and feature values provided - do not invent policy that isn't in the "
+    "excerpts. Name the specific signal(s) that drove the decision (e.g. impossible travel "
+    "speed, too many scan locations) in language a non-technical consumer could understand."
+)
+
+
+def _fraud_query_from_features(features: Dict[str, float]) -> str:
+    terms = []
+    if features.get("max_travel_speed_kmh", 0) > 900:
+        terms.append("impossible travel distant locations short time")
+    if features.get("unique_locations", 0) > 5:
+        terms.append("multiple scan locations duplicated code")
+    if features.get("scans_last_hour", 0) > 3:
+        terms.append("many scans in short period")
+    if not terms:
+        terms.append("normal verified product low risk")
+    return " ".join(terms)
+
+
+def _fraud_fallback_explanation(risk_class: int, features: Dict[str, float], chunks: List[dict]) -> str:
+    label = "high" if risk_class == 1 else "low"
+    drivers = []
+    if features.get("max_travel_speed_kmh", 0) > 900:
+        drivers.append(f"an implied travel speed of {features['max_travel_speed_kmh']:.0f} km/h between scans")
+    if features.get("unique_locations", 0) > 5:
+        drivers.append(f"{int(features['unique_locations'])} distinct scan locations")
+    if features.get("scans_last_hour", 0) > 3:
+        drivers.append(f"{int(features['scans_last_hour'])} scans within the last hour")
+    driver_text = ", ".join(drivers) if drivers else "a scan pattern consistent with normal use"
+
+    policy_refs = ", ".join(sorted({c["doc"].replace(".md", "").replace("_", " ") for c in chunks})) or "general authenticity guidelines"
+
+    return (
+        f"This product was classified as {label} fraud risk, primarily driven by {driver_text}. "
+        f"This is consistent with company policy on {policy_refs}. "
+        f"(Generated without an LLM - set ANTHROPIC_API_KEY to enable natural-language generation.)"
+    )
+
+
+async def explain_fraud_risk(risk_class: int, risk_score: float, features: Dict[str, float]) -> Dict:
+    query = _fraud_query_from_features(features)
+    chunks = get_retriever().retrieve(query, k=3)
+
+    llm_text = None
+    if is_configured():
+        feature_lines = "\n".join(f"- {FRAUD_FEATURE_LABELS.get(k, k)}: {v}" for k, v in features.items())
+        policy_lines = "\n\n".join(f"[{c['doc']}] {c['text']}" for c in chunks)
+        user_prompt = (
+            f"Risk score: {risk_score:.2f} ({'high' if risk_class else 'low'} risk)\n\n"
+            f"Scan history features:\n{feature_lines}\n\n"
+            f"Relevant policy excerpts:\n{policy_lines}"
+        )
+        llm_text = await generate(FRAUD_SYSTEM_PROMPT, user_prompt)
+
+    explanation = llm_text or _fraud_fallback_explanation(risk_class, features, chunks)
+
+    return {
+        "explanation": explanation,
+        "generated_by": "llm" if llm_text else "template_fallback",
+        "sources": chunks,
+    }

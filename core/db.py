@@ -75,6 +75,24 @@ def init_db():
                 risk_class INTEGER NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS products (
+                serial TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+                product_name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scan_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                serial TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                scanned_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_scan_events_serial ON scan_events(serial);
             """
         )
 
@@ -189,5 +207,43 @@ def get_predictions_for_tenant(tenant_id: str, limit: int = 100) -> List[Dict[st
         rows = conn.execute(
             "SELECT * FROM predictions WHERE tenant_id = ? ORDER BY id DESC LIMIT ?",
             (tenant_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- Products & scans (product authenticity domain) --------------------------
+
+def create_product(serial: str, tenant_id: str, product_name: str) -> Dict[str, Any]:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO products (serial, tenant_id, product_name, created_at) VALUES (?, ?, ?, ?)",
+            (serial, tenant_id, product_name, _now()),
+        )
+    return get_product(serial)
+
+
+def get_product(serial: str) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM products WHERE serial = ?", (serial,)).fetchone()
+        return dict(row) if row else None
+
+
+def record_scan(serial: str, tenant_id: str, latitude: float, longitude: float) -> Dict[str, Any]:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO scan_events (serial, tenant_id, latitude, longitude, scanned_at) VALUES (?, ?, ?, ?, ?)",
+            (serial, tenant_id, latitude, longitude, _now()),
+        )
+    return get_scan_history(serial, tenant_id)[0]
+
+
+def get_scan_history(serial: str, tenant_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+    """Scoped by (serial, tenant_id) - the same tenant-isolation pattern used
+    everywhere else in this project: a caller can't see another tenant's
+    scan history for a serial even if they guess a valid one."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scan_events WHERE serial = ? AND tenant_id = ? ORDER BY id DESC LIMIT ?",
+            (serial, tenant_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]

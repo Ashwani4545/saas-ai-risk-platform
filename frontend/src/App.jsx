@@ -9,6 +9,9 @@ const NAV = [
   { id: 'similar', label: 'Similar', hint: 'Nearest neighbors' },
   { id: 'abstats', label: 'A/B Stats', hint: 'Model comparison' },
   { id: 'recent', label: 'Activity', hint: 'Recent predictions' },
+  { id: 'divider', label: '', hint: '' },
+  { id: 'products', label: 'Register Product', hint: 'Product authenticity' },
+  { id: 'scan', label: 'Scan', hint: 'Verify & detect fraud' },
 ]
 
 function useAuth() {
@@ -482,6 +485,200 @@ function RecentView({ headers }) {
   )
 }
 
+function RegisterProductView({ headers }) {
+  const [productName, setProductName] = useState('')
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function run() {
+    if (!productName.trim()) return
+    setLoading(true)
+    setError('')
+    try {
+      setResult(await api.registerProduct(productName, headers))
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Request failed')
+      setResult(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2 style={{ marginTop: 0, fontSize: 16 }}>Register a product</h2>
+      <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: -6 }}>
+        Generates a unique serial and a QR code. Copy the serial into the Scan tab to simulate a consumer scan.
+      </p>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 16 }}>
+        <Field label="Product name">
+          <input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="e.g. Air Jordan 1" style={{ width: 240 }} />
+        </Field>
+        <button className="btn btn-primary" onClick={run} disabled={loading} style={{ marginBottom: 12 }}>
+          {loading ? 'Registering…' : 'Register'}
+        </button>
+      </div>
+      <ErrorNote error={error} />
+      {result && (
+        <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
+          <div
+            style={{ width: 140, height: 140, background: '#fff', borderRadius: 8, padding: 8, flexShrink: 0 }}
+            dangerouslySetInnerHTML={{ __html: result.qr_svg }}
+          />
+          <div>
+            <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 4 }}>Serial</div>
+            <div className="mono" style={{ fontSize: 15, color: 'var(--accent)', marginBottom: 12 }}>{result.product.serial}</div>
+            <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 4 }}>Product</div>
+            <div style={{ fontSize: 14 }}>{result.product.product_name}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ScanView({ headers }) {
+  const [serial, setSerial] = useState('')
+  const [lat, setLat] = useState(28.6139)
+  const [lng, setLng] = useState(77.209)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const [history, setHistory] = useState(null)
+  const [historyError, setHistoryError] = useState('')
+
+  async function runScan() {
+    if (!serial.trim()) return
+    setLoading(true)
+    setError('')
+    try {
+      const res = await api.scanProduct(serial.trim(), Number(lat), Number(lng), headers)
+      setResult(res)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Request failed')
+      setResult(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function loadHistory() {
+    setHistoryError('')
+    try {
+      const res = await api.productHistory(serial.trim(), headers)
+      setHistory(res.history)
+    } catch (e) {
+      setHistoryError(e instanceof ApiError ? e.message : 'Request failed')
+      setHistory(null)
+    }
+  }
+
+  const CITY_PRESETS = [
+    { label: 'Delhi', lat: 28.6139, lng: 77.209 },
+    { label: 'Mumbai', lat: 19.076, lng: 72.8777 },
+    { label: 'Bengaluru', lat: 12.9716, lng: 77.5946 },
+  ]
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 20 }}>
+      <div className="card">
+        <h2 style={{ marginTop: 0, fontSize: 16 }}>Scan a product</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: -6 }}>
+          Simulates a consumer scanning a QR code from a given location. Scan the same serial from two distant
+          cities in a row to trigger the impossible-travel fraud signal.
+        </p>
+        <Field label="Serial">
+          <input value={serial} onChange={(e) => setSerial(e.target.value)} placeholder="PRD-XXXXXXXXXXXX" style={{ width: 260 }} />
+        </Field>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          {CITY_PRESETS.map((c) => (
+            <button
+              key={c.label}
+              className="btn"
+              style={{ fontSize: 12 }}
+              onClick={() => {
+                setLat(c.lat)
+                setLng(c.lng)
+              }}
+            >
+              📍 {c.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 4 }}>
+          <Field label="Latitude">
+            <input type="number" step="0.0001" value={lat} onChange={(e) => setLat(e.target.value)} />
+          </Field>
+          <Field label="Longitude">
+            <input type="number" step="0.0001" value={lng} onChange={(e) => setLng(e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-primary" onClick={runScan} disabled={loading}>
+            {loading ? 'Scanning…' : 'Scan'}
+          </button>
+          <button className="btn" onClick={loadHistory} disabled={!serial.trim()}>
+            View history
+          </button>
+        </div>
+        <ErrorNote error={error} />
+
+        {result && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+              <span className={`pill ${result.verified === false || result.risk_class ? 'pill-high' : 'pill-low'}`}>
+                {result.verified === false ? 'unverified' : result.risk_class ? 'high risk' : 'low risk'}
+              </span>
+              {result.generated_by && (
+                <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {result.generated_by === 'llm' ? 'LLM-generated' : 'template fallback'}
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize: 14, lineHeight: 1.6 }}>{result.explanation}</p>
+            <SourceChunks sources={result.sources} />
+          </div>
+        )}
+
+        {historyError && <ErrorNote error={historyError} />}
+        {history && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 }}>
+              Scan history ({history.length})
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--text-muted)', fontSize: 10, textTransform: 'uppercase' }}>
+                  <th style={{ padding: '4px 6px' }}>Lat</th>
+                  <th style={{ padding: '4px 6px' }}>Lng</th>
+                  <th style={{ padding: '4px 6px' }}>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((h) => (
+                  <tr key={h.id} style={{ borderTop: '1px solid var(--panel-border-soft)' }}>
+                    <td className="mono" style={{ padding: '4px 6px' }}>{h.latitude.toFixed(3)}</td>
+                    <td className="mono" style={{ padding: '4px 6px' }}>{h.longitude.toFixed(3)}</td>
+                    <td className="mono" style={{ padding: '4px 6px', color: 'var(--text-muted)', fontSize: 10 }}>
+                      {new Date(h.scanned_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <RiskGauge score={result && result.verified !== false ? result.risk_score : null} loading={loading} />
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const auth = useAuth()
   const [tab, setTab] = useState('predict')
@@ -501,6 +698,8 @@ export default function App() {
     similar: <SimilarView headers={auth.headers} />,
     abstats: <ABStatsView headers={auth.headers} />,
     recent: <RecentView headers={auth.headers} />,
+    products: <RegisterProductView headers={auth.headers} />,
+    scan: <ScanView headers={auth.headers} />,
   }
 
   return (
@@ -515,23 +714,27 @@ export default function App() {
         </div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 28 }}>
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setTab(item.id)}
-              className="btn"
-              style={{
-                textAlign: 'left',
-                border: 'none',
-                background: tab === item.id ? 'var(--accent-soft)' : 'transparent',
-                color: tab === item.id ? 'var(--accent)' : 'var(--text-secondary)',
-                fontWeight: tab === item.id ? 600 : 500,
-              }}
-            >
-              {item.label}
-              <div style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-muted)', marginTop: 2 }}>{item.hint}</div>
-            </button>
-          ))}
+          {NAV.map((item) =>
+            item.id === 'divider' ? (
+              <div key="divider" style={{ borderTop: '1px solid var(--panel-border-soft)', margin: '10px 6px' }} />
+            ) : (
+              <button
+                key={item.id}
+                onClick={() => setTab(item.id)}
+                className="btn"
+                style={{
+                  textAlign: 'left',
+                  border: 'none',
+                  background: tab === item.id ? 'var(--accent-soft)' : 'transparent',
+                  color: tab === item.id ? 'var(--accent)' : 'var(--text-secondary)',
+                  fontWeight: tab === item.id ? 600 : 500,
+                }}
+              >
+                {item.label}
+                <div style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-muted)', marginTop: 2 }}>{item.hint}</div>
+              </button>
+            )
+          )}
         </nav>
 
         <div style={{ borderTop: '1px solid var(--panel-border-soft)', paddingTop: 16 }}>

@@ -15,6 +15,9 @@ mlflow>=2.9.0
 # Vector store
 faiss-cpu>=1.7.4
 
+# Product authenticity (QR codes)
+qrcode>=7.4.0
+
 # Messaging
 kafka-python>=2.0.2
 

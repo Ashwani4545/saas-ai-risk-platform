@@ -164,3 +164,92 @@ pass including these.
 `ANTHROPIC_API_KEY` in `.env`. Without it, the feature still works and is
 still gradeable/testable - that was an intentional design choice, not a
 missing feature.
+
+## 11. Second domain: Product Authenticity Scanner & Fraud Detection
+
+Added as a genuine second application of this platform's shared
+infrastructure (auth, tenant isolation, persistence, model pipeline
+pattern, RAG explanation), not a separate bolted-on project. The overlap
+was checked for real reuse before writing any code - see the compatibility
+breakdown earlier in this conversation for the reasoning.
+
+**Problem it solves:** verify product authenticity via QR code and flag
+likely counterfeits using scan-pattern fraud signals - duplicate scans and
+"impossible travel" (the same item scanned from two distant locations
+faster than physically possible).
+
+**`product_auth/qr_service.py`** - generates a unique, non-guessable serial
+(UUID-based, not sequential - so counterfeiters can't enumerate valid
+serials) and a QR code as SVG. SVG, not PNG, for the same dependency-free
+reason as the RAG retriever choice: no Pillow/native imaging dependency
+needed.
+
+**`product_auth/scan_service.py`** - `haversine_km()` (great-circle
+distance) and `compute_scan_features()`, which turns a product's scan
+history into named features: scan_count, unique_locations,
+max_travel_speed_kmh, min_seconds_between_scans, scans_last_hour. Verified
+directly: two scans ~1150km apart seconds apart in test time produce a
+max_travel_speed_kmh in the millions - correctly flagged as impossible.
+
+**`product_auth/fraud_model.py`** - deliberately mirrors
+`models/risk_model.py`'s interface (load-from-disk, `.predict()` ->
+`{risk_score, risk_class}`, held-out AUC/precision/recall written to a
+metrics.json) - the same platform pattern applied to a second domain.
+
+**`product_auth/data_generator.py`** - synthetic legit vs. suspicious scan
+patterns. First version scored a suspicious AUC of 1.0 - caught this the
+same way the credit-risk model's noise-trained labels were caught earlier
+in this project: an unbelievable metric is a signal to look harder, not a
+result to ship. Added realistic overlap (legit products occasionally get
+one slow, distant "travel" scan; some fraud cases are deliberately mild)
+plus 6% label noise, since real fraud labeling is never perfectly clean.
+Final AUC: ~0.92 on held-out data - strong and still believable.
+
+**RAG reuse:** `rag/explain.py` gained `explain_fraud_risk()`, and two new
+policy documents (`duplicate_scan_policy.md`,
+`product_authenticity_policy.md`) were added to the *same* knowledge base
+used by the credit-risk explainer. Verified the shared TF-IDF index still
+retrieves cleanly per-domain (dispute queries → dispute policy, scan
+queries → scan policy, no cross-contamination in the top results) - though
+one honest limitation: on a generic/low-signal query, a low-ranked
+irrelevant chunk from the other domain can occasionally surface (seen live
+in testing: a low-risk product scan pulled in a `credit_score_policy.md`
+chunk at rank 3, lowest score). Not wrong, just a known limitation of
+sharing one small TF-IDF index across domains - splitting into
+per-domain indices is the fix if this matters more than the simplicity of
+one shared knowledge base.
+
+**New endpoints:**
+- `POST /products/register` - `{product_name}` → generates serial + QR
+- `POST /scan` - `{serial, latitude, longitude}` → records the scan, runs
+  the fraud model, returns a risk score with a RAG-grounded explanation.
+  An unregistered or wrong-tenant serial is immediately flagged unverified
+  (risk 1.0) without needing a model call - per
+  `product_authenticity_policy.md`.
+- `GET /products/{serial}/history` - tenant-scoped scan history
+
+**Tenant isolation, enforced the same way as the credit-risk domain:**
+scans and product lookups are always scoped to `(serial, tenant_id)` from
+the authenticated principal. Verified live: scanning another tenant's real
+serial with a valid API key for a *different* tenant returns `verified:
+false`, and `GET .../history` for a product you don't own returns 404.
+
+**Frontend:** two new tabs - "Register Product" (shows the generated QR +
+serial) and "Scan" (location presets for three cities to make the
+impossible-travel demo easy to trigger, the same risk gauge component
+reused from the credit-risk Predict tab, and scan history).
+
+**Tests (`tests/test_product_auth.py`):** haversine correctness, QR
+uniqueness, feature computation on known impossible-travel data, and the
+same auth/tenant-isolation assertions as the rest of the suite, applied to
+the new endpoints. 71/71 tests pass across the whole project including
+these.
+
+**Verified live**, not just unit-tested: registered a real product,
+scanned it from Delhi (risk 0.14, low, grounded in general authenticity
+policy), then scanned the same serial from Mumbai seconds later in test
+time (risk jumped to 0.69, high, grounded specifically in
+`duplicate_scan_policy.md`'s impossible-travel clause) - confirming the
+whole pipeline (scan → feature computation → model → RAG explanation)
+reacts correctly to a real fraud pattern, not just to hardcoded test
+inputs.

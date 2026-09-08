@@ -23,7 +23,10 @@ from monitoring.metrics import (
     get_metrics_content_type,
 )
 from mlflow_tracking.tracker import get_mlflow_tracker
-from rag.explain import explain_prediction, answer_policy_question
+from rag.explain import explain_prediction, answer_policy_question, explain_fraud_risk
+from product_auth.qr_service import generate_serial, generate_qr_svg
+from product_auth.scan_service import compute_scan_features
+from product_auth.fraud_model import get_fraud_model, FEATURE_COLUMNS as FRAUD_FEATURE_COLUMNS
 from core import db
 from auth.security import (
     get_current_user,
@@ -97,6 +100,16 @@ class ExplainRequest(BaseModel):
 
 class PolicyQuestionRequest(BaseModel):
     question: str
+
+
+class RegisterProductRequest(BaseModel):
+    product_name: str
+
+
+class ScanRequest(BaseModel):
+    serial: str
+    latitude: float
+    longitude: float
 
 
 @app.get("/health")
@@ -286,6 +299,77 @@ async def ask_policy_question(request: PolicyQuestionRequest, user: Dict = Depen
     """General RAG Q&A over the underwriting policy knowledge base - no
     customer data involved, so it's not tenant-scoped beyond requiring auth."""
     return await answer_policy_question(request.question)
+
+
+# --- Product authenticity domain --------------------------------------------
+# Shares this platform's auth, tenant isolation, persistence, and RAG
+# explanation pattern with the credit-risk domain above - a second
+# application of the same infrastructure rather than a separate project.
+
+
+@app.post("/products/register")
+async def register_product(request: RegisterProductRequest, user: Dict = Depends(check_rate_limit)):
+    tenant_id = user["tenant_id"]
+    serial = generate_serial()
+    product = db.create_product(serial, tenant_id, request.product_name)
+    qr_svg = generate_qr_svg(serial, tenant_id)
+    return {"product": product, "qr_svg": qr_svg}
+
+
+@app.post("/scan")
+async def scan_product(request: ScanRequest, user: Dict = Depends(check_rate_limit)):
+    """Record a scan and return a fraud-risk assessment, grounded in
+    authenticity policy via the same RAG explainer used for credit risk."""
+    tenant_id = user["tenant_id"]
+    product = db.get_product(request.serial)
+
+    if not product or product["tenant_id"] != tenant_id:
+        # Unregistered (or wrong-tenant) serial is itself the strongest
+        # possible signal - per rag/knowledge_base/product_authenticity_policy.md
+        return {
+            "serial": request.serial,
+            "verified": False,
+            "risk_score": 1.0,
+            "risk_class": 1,
+            "explanation": "This serial number is not registered to this tenant. Unrecognized or mismatched serials are treated as unverified by policy.",
+            "sources": [],
+        }
+
+    db.record_scan(request.serial, tenant_id, request.latitude, request.longitude)
+    features = compute_scan_features(request.serial, tenant_id)
+    feature_vector = np.array([features[col] for col in FRAUD_FEATURE_COLUMNS])
+
+    model = get_fraud_model()
+    prediction = model.predict(feature_vector)
+
+    explanation = await explain_fraud_risk(prediction["risk_class"], prediction["risk_score"], features)
+
+    get_kafka_producer().send_prediction_event(
+        tenant_id=tenant_id,
+        customer_id=hash(request.serial) % 1_000_000,  # scan events aren't customer-keyed; reuse the same event shape
+        model_version="fraud_model",
+        risk_score=prediction["risk_score"],
+        risk_class=prediction["risk_class"],
+    )
+
+    return {
+        "serial": request.serial,
+        "verified": True,
+        "product_name": product["product_name"],
+        "risk_score": round(prediction["risk_score"], 4),
+        "risk_class": prediction["risk_class"],
+        "features": features,
+        **explanation,
+    }
+
+
+@app.get("/products/{serial}/history")
+async def get_product_scan_history(serial: str, user: Dict = Depends(check_rate_limit)):
+    tenant_id = user["tenant_id"]
+    product = db.get_product(serial)
+    if not product or product["tenant_id"] != tenant_id:
+        raise HTTPException(status_code=404, detail="Product not found for this tenant")
+    return {"serial": serial, "product_name": product["product_name"], "history": db.get_scan_history(serial, tenant_id)}
 
 
 @app.post("/models/train")

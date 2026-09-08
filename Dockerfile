@@ -20,6 +20,9 @@ RUN mkdir -p data models/trained
 # Generate sample data and train models
 RUN python -c "from data.generate_features import save_features; save_features()" || true
 RUN python -c "from models.risk_model import train_and_save_models; train_and_save_models()" || true
+RUN python -c "from core import db; db.init_db()" || true
+RUN python -c "from product_auth.data_generator import generate_and_persist_scan_data; generate_and_persist_scan_data()" || true
+RUN python -c "from product_auth.fraud_model import train_and_save_fraud_model; train_and_save_fraud_model()" || true
 
 # Expose ports
 EXPOSE 8000
